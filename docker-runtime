@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# docker-runtime - report runtime duration and logs for a Docker container
+
+set -euo pipefail
+
+format_duration() {
+  local SECONDS=$1
+  local DAYS=$(( SECONDS/86400 ))
+  local HOURS=$(( (SECONDS%86400)/3600 ))
+  local MINUTES=$(( (SECONDS%3600)/60 ))
+  local SECS=$(( SECONDS%60 ))
+
+  if [ $DAYS -gt 0 ]; then
+    echo "${DAYS}d ${HOURS}h ${MINUTES}m ${SECS}s"
+  elif [ $HOURS -gt 0 ]; then
+    echo "${HOURS}h ${MINUTES}m ${SECS}s"
+  elif [ $MINUTES -gt 0 ]; then
+    echo "${MINUTES}m ${SECS}s"
+  else
+    echo "${SECS}s"
+  fi
+}
+
+if [ $# -lt 1 ]; then
+  echo "Usage: $0 <container_name> [--follow]"
+  exit 1
+fi
+
+CONTAINER="$1"
+FOLLOW_LOGS="${2:-}"
+
+echo "Inspecting container: $CONTAINER"
+echo "--------------------------------"
+
+START_TIME=$(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null || echo "")
+END_TIME=$(docker inspect -f '{{.State.FinishedAt}}' "$CONTAINER" 2>/dev/null || echo "")
+
+if [ -z "$START_TIME" ]; then
+  echo "❌ No such container: $CONTAINER"
+  exit 1
+fi
+
+echo "Start time: $START_TIME"
+
+if [ "$END_TIME" != "0001-01-01T00:00:00Z" ] && [ -n "$END_TIME" ]; then
+  echo "End time:   $END_TIME"
+  DURATION=$(( $(date -d "$END_TIME" +%s) - $(date -d "$START_TIME" +%s) ))
+  echo "Duration:   $(format_duration $DURATION)"
+else
+  echo "End time:   (still running)"
+  NOW=$(date +%s)
+  DURATION=$(( NOW - $(date -d "$START_TIME" +%s) ))
+  echo "Elapsed:    $(format_duration $DURATION)"
+fi
+
+echo
+echo "Logs:"
+echo "--------------------------------"
+
+if [ "$FOLLOW_LOGS" = "--follow" ]; then
+  docker logs -f "$CONTAINER"
+else
+  docker logs --tail 50 "$CONTAINER"
+fi
