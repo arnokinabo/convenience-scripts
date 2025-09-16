@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# file-sync
+#
+# Safely copy or sync large/growing files (e.g. SQLite databases)
+# or entire folders across devices, say, your local host to a remote
+# VM. Requires that rsync be installed on both devices. Source and
+# destination paths, and others are set in the script itself.
+# Includes cron job usage for an envisaged data transfer pipeline.
+#
+# 1. Performs a dry run first.
+# 2. If dry run succeeds (exit code 0), performs the real transfer.
+# 3. Logs are written to the designated logs folder.
+#
+# Future improvements:
+# - Perhaps optimise by appending deltas instead of syncing the whole
+# file, even though rsync usage herein mimics this behaviour. 
+
+set -euo pipefail
+
+# -------------------------
+# Configuration
+# -------------------------
+
+# Local path to the source file or directory
+# NOTE: For directories, trailing slash matters:
+#   - "/path/to/dir/" copies only contents of dir
+#   - "/path/to/dir"  copies the directory itself
+SRC_FILE="/home/arnie/object-tracker/results/tracker.db"
+
+# Remote destination
+DEST_FILE="user@host:/mnt/path/to/dest.db"
+
+# SSH key for authentication
+SSH_KEY="/home/arnie/.ssh/id_ed25519"
+
+# Log directory
+LOG_DIR="/home/arnie/object-tracker/logs"
+mkdir -p "$LOG_DIR"
+
+# Timestamp for log filenames
+TS=$(date +"%Y-%m-%d_%H%M%S")
+
+# Log files
+DRY_RUN_LOG="$LOG_DIR/sync_dry_run_$TS.log"
+SYNC_LOG="$LOG_DIR/sync_real_$TS.log"
+
+# -------------------------
+# Functions
+# -------------------------
+
+dry_run() {
+    echo "[INFO] Starting dry-run..."
+    rsync -Pavzn --info=progress2 \
+        -e "ssh -i $SSH_KEY" \
+        "$SRC_FILE" "$DEST_FILE" \
+        | tee "$DRY_RUN_LOG"
+    return "${PIPESTATUS[0]}"  # preserve rsync’s exit code
+}
+
+real_sync() {
+    echo "[INFO] Starting real sync..."
+    rsync -Pavz --info=progress2 \
+        -e "ssh -i $SSH_KEY" \
+        "$SRC_FILE" "$DEST_FILE" \
+        | tee "$SYNC_LOG"
+}
+
+# -------------------------
+# Main logic
+# -------------------------
+
+echo "[INFO] Running file-sync at $TS"
+echo "[INFO] Source: $SRC_FILE"
+echo "[INFO] Destination: $DEST_FILE"
+echo
+
+# Step 1: Dry run
+if dry_run; then
+    echo "[INFO] Dry run succeeded, proceeding to real sync..."
+    real_sync
+    echo "[INFO] Sync complete."
+else
+    echo "[ERROR] Dry run failed, aborting sync."
+    exit 1
+fi
+
+# -------------------------
+# Example Cron Job
+# -------------------------
+# To run this script every weekday (Mon–Fri) at 12:15 on your local device's time:
+#
+# 15 12 * * 1-5 /home/arnie/convenience-scripts/file-sync >> /home/arnie/object-tracker/logs/cron_sync.log 2>&1
+#
+# Notes:
+# - Ensure this script is executable: chmod +x /home/arnie/convenience-scripts/file-sync
+# - Ensure /home/arnie/convenience-scripts is in your PATH, as per README.
