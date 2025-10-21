@@ -1,6 +1,6 @@
 # Convenience Scripts
 
-A collection of small helper scripts for day-to-day development and server operations.
+A collection of small helper scripts and guides for day-to-day development and server operations.
 
 They are written for Linux/Unix environments (Bash + standard GNU tools). They may also work on macOS, or under Windows, through WSL or Git Bash, though these remain untested.
 
@@ -53,6 +53,14 @@ Safely copy or sync large/growing files (e.g. SQLite databases) or entire folder
 # Basic usage
 file-sync
 ```
+
+---
+
+## 📖 Guides
+
+### `network-share`
+
+Setup guide for NFS folder sharing with automount over any IP-reachable network (LAN/VPN/Tailscale). Includes troubleshooting for cloud VM environments where reverse DNS may not work.
 
 ---
 

@@ -1,0 +1,175 @@
+# Network Share Setup
+
+Guide for setting up shared folders over the network, i.e., exporting a folder from a server and mounting it on a client. It uses NFS with automount support. Works over any network where IPs are reachable (LAN, VPN, Tailscale, etc.).
+
+---
+
+## 1. Server – Export the folder
+
+Install NFS server:
+
+```bash
+sudo apt update
+sudo apt install nfs-kernel-server
+```
+
+Edit `/etc/exports`:
+
+```bash
+sudo nano /etc/exports
+```
+
+Add export entry (use client hostname or IP) for the folder you'd like to export, as per below:
+
+```bash
+/folder/path/dance-videos  client-hostname(rw,sync,no_subtree_check,no_root_squash)
+```
+
+> **Note:** Hostnames usually work fine. However, in some cloud VM environments (e.g., Vast.ai in conjunction with Tailscale), you may need to use the client's IP address instead if you get "Permission denied" errors. This is due to missing reverse DNS lookups.
+>
+> Check client IP: `ip addr show tailscale0` (or relevant interface)
+
+Apply changes:
+
+```bash
+sudo exportfs -ra
+sudo systemctl restart nfs-server
+```
+
+**Options:**
+* `rw` – read-write access; use `ro` for read-only
+* `sync` – writes are flushed immediately
+* `no_root_squash` – allows root on client to act as root on server
+* `no_subtree_check` – prevents path-rename issues
+
+---
+
+## 2. Client – Mount the share automatically
+
+Install NFS client:
+
+```bash
+sudo apt update
+sudo apt install nfs-common
+```
+
+Create mountpoint:
+
+```bash
+mkdir -p /home/arnie/dance-videos
+```
+
+Edit `/etc/fstab` (the filesystem table read at boot to mount filesystems). This file is used to automatically mount all its entries on every boot, for persistence:
+
+```bash
+sudo nano /etc/fstab
+```
+
+Add this line, replacing the path to the local mountpoint with your own:
+
+```bash
+server-hostname:/path/to/shared/folder /home/arnie/dance-videos nfs rw,_netdev,x-systemd.automount,x-systemd.requires=network-online.target,x-systemd.idle-timeout=600,noatime,nofail,timeo=150,retrans=2 0 0
+```
+
+> **Important:**
+> - Use **absolute paths** (e.g., `/root/folder`) not `$HOME` — variables aren't expanded in fstab
+> - **For older NFS servers:** Insert `vers=3,proto=tcp,mountproto=tcp,` after `rw,` to specify NFSv3; omit for NFSv4
+
+**Mount options:**
+* `rw` – mount as read-write
+* `_netdev` – wait for network before mounting
+* `x-systemd.automount` – mount automatically when accessed
+* `x-systemd.requires=network-online.target` – wait for network to be fully online
+* `x-systemd.idle-timeout=600` – unmount after 10 minutes of inactivity
+* `noatime` – don't update file access times (improves performance)
+* `nofail` – don't prevent boot if mount fails
+* `timeo=150` – timeout for NFS requests (1.5 seconds)
+* `retrans=2` – number of retransmission attempts
+
+Activate automount:
+
+```bash
+sudo systemctl daemon-reload
+sudo mount -a  # Mount all from fstab
+```
+
+Or simply trigger automount by accessing the directory:
+
+```bash
+ls /home/arnie/dance-videos
+```
+
+---
+
+## 3. Verify and troubleshoot
+
+Check exports from client:
+
+```bash
+sudo showmount -e server-hostname
+```
+
+Check mount status:
+
+```bash
+mount | grep nfs
+```
+
+If changes aren't reflected, refresh both sides:
+
+**Server:**
+```bash
+sudo exportfs -ra
+sudo systemctl restart nfs-server
+```
+
+**Client:**
+```bash
+sudo umount /home/arnie/dance-videos
+sudo systemctl daemon-reload
+sudo mount -a
+```
+
+---
+
+## 4. Persist after reboot
+
+Ensure network services are enabled:
+
+```bash
+sudo systemctl enable remote-fs.target
+sudo systemctl enable systemd-networkd-wait-online.service
+```
+
+Test after reboot:
+
+```bash
+sudo mount -a
+ls /home/arnie/dance-videos
+```
+
+---
+
+## ✅ Features
+
+* Automount on access (no manual mounting needed)
+* Auto-unmount after 10 minutes of inactivity
+* Persists across reboots
+* Works over any IP-reachable network (LAN/VPN/Tailscale)
+* NFSv3 compatible with older servers
+
+---
+
+## 🔧 Troubleshooting: Hostname issues
+
+**Symptom:** Mount fails with "Permission denied" even though hostname resolves correctly.
+
+**Cause:** As mentioned, some environments lack reverse DNS (PTR records). NFS verifies clients with reverse lookups: hostname → IP works, but IP → hostname fails.
+
+**Solution:** Use client IP address in `/etc/exports` instead of hostname:
+
+```bash
+/path/to/shared/folder  100.x.x.x(rw,sync,no_subtree_check,no_root_squash)
+```
+
+(On server) Check with: `getent hosts <client-ip>` — if it returns nothing, reverse DNS is missing.
