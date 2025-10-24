@@ -1,0 +1,280 @@
+# Network Share Setup with rclone
+
+Guide for setting up shared folders over the network using rclone with SFTP backend. Much simpler than NFS - requires only SSH access on the server, no daemon configuration needed. Works over any network where IPs are reachable (LAN, VPN, Tailscale, etc.).
+
+---
+
+## 1. Server – Prerequisites
+
+**No server installation needed!** Just ensure SSH is running on both client and server:
+
+```bash
+systemctl status ssh
+```
+
+If SSH isn't running:
+
+```bash
+sudo apt install openssh-server
+sudo systemctl enable ssh --now
+```
+
+**Optional:** Set up SSH key authentication on the client for passwordless access to the server:
+
+```bash
+# On client:
+ssh-keygen -t ed25519
+ssh-copy-id username@server-hostname
+```
+
+---
+
+## 2. Client – Install and configure rclone
+
+Install rclone (curl method gets latest version, apt repositories often have outdated versions):
+
+```bash
+curl https://rclone.org/install.sh | bash
+```
+
+Configure remote (one-liner, faster and recommended):
+
+```bash
+rclone config create pilot-6 sftp host pilot-6 user momimo key_file ~/.ssh/id_ed25519
+```
+
+> **Note:** Replace `pilot-6` with your server hostname and `momimo` with your SSH username. Use hyphens or underscores in the remote name (not spaces) to avoid needing quotes in commands. If using default SSH keys (`~/.ssh/id_rsa` or `~/.ssh/id_ed25519`), no need to specify `key_file`.
+
+Or interactive method (more prompts, but guided):
+
+```bash
+rclone config
+```
+
+Key prompts to expect:
+- **n** (New remote)
+- **name:** `pilot-6` (or any name you prefer)
+- **Storage:** `sftp`
+- **host:** `pilot-6` (hostname only, not `user@host`)
+- **user:** `momimo` (or press Enter to use current user)
+- **port/pass/key_file:** Press Enter for defaults
+- **use_insecure_cipher/disable_hashcheck:** Press Enter for defaults
+- **Edit advanced config:** `n`
+- **y** (Yes this is OK)
+- **q** (Quit config)
+
+Test connection:
+
+```bash
+rclone ls pilot-6:/mnt/external/Hexagon-daily-recordings
+```
+
+---
+
+## 3a. Client – Mount as background process (simpler, no persistence)
+
+**Recommended for temporary setups or ephemeral instances.** Mount lasts until reboot or manual unmount. No systemd configuration needed.
+
+Create mount point:
+
+```bash
+mkdir -p /root/Hexagon-daily-recordings
+```
+
+Enable FUSE user_allow_other (required for `--allow-other` flag):
+
+```bash
+sudo nano /etc/fuse.conf
+```
+
+Uncomment this line:
+```
+user_allow_other
+```
+
+Start mount as background daemon:
+
+```bash
+rclone mount pilot-6:/mnt/external/Hexagon-daily-recordings /root/Hexagon-daily-recordings \
+  --vfs-cache-mode full \
+  --vfs-cache-max-size 2G \
+  --dir-cache-time 1m \
+  --poll-interval 30s \
+  --buffer-size 256M \
+  --allow-other \
+  --umask 002 \
+  --log-file /var/log/rclone-hexagon.log \
+  --daemon
+```
+
+The `--daemon` flag runs the mount in the background. It will stay active until you unmount it or reboot.
+
+Verify mount:
+
+```bash
+mount | grep rclone
+ls /root/Hexagon-daily-recordings
+```
+
+Unmount when done:
+
+```bash
+fusermount -uz /root/Hexagon-daily-recordings
+```
+
+**Pros:**
+* Simple – no systemd service files
+* Quick to set up and tear down
+* Perfect for temporary compute instances
+
+**Cons:**
+* Doesn't survive reboots
+* No automatic restart on failure
+* Must manually remount after each boot
+
+---
+
+## 3b. Client – Mount with systemd (persistent)
+
+**Recommended for long-lived servers.** Mount persists across reboots and restarts on failure.
+
+Create mount point:
+
+```bash
+mkdir -p /root/Hexagon-daily-recordings
+```
+
+Create systemd service:
+
+```bash
+sudo nano /etc/systemd/system/rclone-hexagon.service
+```
+
+Add this content:
+
+```ini
+[Unit]
+Description=rclone mount for Hexagon recordings
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/bin/mkdir -p /root/Hexagon-daily-recordings
+ExecStart=/usr/bin/rclone mount pilot-6:/mnt/external/Hexagon-daily-recordings /root/Hexagon-daily-recordings \
+  --vfs-cache-mode full \
+  --vfs-cache-max-size 2G \
+  --dir-cache-time 1m \
+  --poll-interval 30s \
+  --buffer-size 256M \
+  --allow-other \
+  --umask 002 \
+  --log-level INFO \
+  --log-file /var/log/rclone-hexagon.log
+ExecStop=/bin/fusermount -uz /root/Hexagon-daily-recordings
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+> **Important:**
+> - Replace paths with your own mount point and remote path
+> - Use **absolute paths** (e.g., `/root/folder`) not `$HOME` — variables aren't always expanded
+> - This configuration works for both reading and writing (writes require read access for file metadata)
+
+**Mount options:**
+* `--vfs-cache-mode full` – cache both reads and writes for best performance (uses ~2GB local disk)
+* `--vfs-cache-max-size 2G` – limit cache size to prevent unbounded growth
+* `--dir-cache-time 1m` – cache directory listings for 1 minute to reduce network requests
+* `--poll-interval 30s` – check for remote changes every 30 seconds
+* `--buffer-size 256M` – buffer size for transfers
+* `--allow-other` – allow other users to access the mount
+* `--umask 002` – set file permissions (rwxrwxr-x)
+* `--log-file` – log location for troubleshooting
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable rclone-hexagon.service
+sudo systemctl start rclone-hexagon.service
+```
+
+---
+
+## 4. Verify and troubleshoot
+
+Check mount status:
+
+```bash
+mount | grep rclone
+```
+
+View logs:
+
+```bash
+sudo journalctl -u rclone-hexagon.service -f
+```
+
+If mount isn't working, restart:
+
+```bash
+sudo systemctl restart rclone-hexagon.service
+```
+
+Manual unmount (if needed):
+
+```bash
+fusermount -uz /root/Hexagon-daily-recordings
+```
+
+---
+
+## 5. Persist after reboot
+
+The systemd service automatically starts on boot. Test after reboot:
+
+```bash
+sudo reboot
+# After reboot:
+mount | grep rclone
+ls /root/Hexagon-daily-recordings
+```
+
+---
+
+## ✅ Features
+
+* No server daemon needed – just SSH access
+* Automatic reconnection on network issues
+* VFS caching for better performance
+* Automatic mount on boot via systemd
+* Built-in logging for troubleshooting
+* Works over any IP-reachable network (LAN/VPN/Tailscale)
+* More reliable than NFS in unstable network conditions
+
+---
+
+## 🔧 Troubleshooting: Permission denied
+
+**Symptom:** Mount works but you get "Permission denied" when accessing files.
+
+**Cause:** FUSE `user_allow_other` option is disabled by default.
+
+**Solution:** Enable it in FUSE config:
+
+```bash
+sudo nano /etc/fuse.conf
+```
+
+Uncomment this line:
+```
+user_allow_other
+```
+
+Restart service:
+```bash
+sudo systemctl restart rclone-hexagon.service
+```
